@@ -4,17 +4,15 @@ import json
 import time
 
 # Tambahkan path ke V22_InaprocOrder agar bisa import api_client
-# Gunakan path relatif jika mungkin, tapi untuk dev kita pakai absolute
 sys.path.append(r"D:\Dokumen\@ POKJA 2026\V19_Scheduler\WPy64-313110\V22_InaprocOrder")
 
 try:
     from api_client import buat_client
 except ImportError:
-    # Fallback jika dijalankan dari tempat lain
     print("Gagal import api_client. Pastikan environment benar.")
     raise
 
-# Query GraphQL Utama (Dikalibrasi dari Intercept)
+# Query GraphQL Utama - Versi Diperkaya (TKDN, Brand, Score)
 _Q_SEARCH_PRODUCTS = """
 query ($_v0_input: SearchProductInput!) {
   _v0_searchProducts: searchProducts(input: $_v0_input) {
@@ -27,6 +25,7 @@ query ($_v0_input: SearchProductInput!) {
         id
         name
         sellerName
+        sellerId
         defaultPriceWithTax
         location {
           name
@@ -35,8 +34,22 @@ query ($_v0_input: SearchProductInput!) {
             name
           }
         }
+        tkdn {
+          value
+          bmpValue
+          tkdnBmp
+          status
+        }
+        labels
+        brand {
+          brandName
+        }
+        category {
+          name
+        }
         images
         slug
+        score
       }
     }
     ... on GenericError {
@@ -47,8 +60,6 @@ query ($_v0_input: SearchProductInput!) {
 }
 """
 
-# Mapping Lokasi Kalsel ke Region Code (Estimasi 2-digit depan 63)
-# Note: regionCode Inaproc menggunakan standar BPS
 REGION_MAP = {
     "Kab. Balangan": "63.11",
     "Kab. Banjar": "63.03",
@@ -83,7 +94,7 @@ def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=
         sort_field = "PRICE"
         sort_dir = "DESC"
 
-    # 2. Tentukan Filter Lokasi (Region Codes)
+    # 2. Tentukan Filter Lokasi
     seller_region_codes = [""]
     if location_filter:
         seller_region_codes = []
@@ -92,26 +103,18 @@ def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=
             if l in REGION_MAP:
                 seller_region_codes.append(REGION_MAP[l])
             else:
-                # Jika tidak ada di map, kita masukkan 63 (Kalsel secara umum)
                 if "63" not in seller_region_codes:
                     seller_region_codes.append("63")
 
     # 3. Main Pagination Loop
     for p in range(1, max_pages + 1):
-        print(f"Mengambil Halaman {p} via API...")
-        
         variables = {
           "_v0_input": {
-            "sort": [
-              {
-                "field": sort_field,
-                "order": sort_dir
-              }
-            ],
+            "sort": [{"field": sort_field, "order": sort_dir}],
             "filter": {
               "strategy": "SRP",
               "keyword": keyword,
-              "regionCode": "63.05.04.1004", # Default region (Tapin)
+              "regionCode": "63.05.04.1004",
               "labels": [],
               "sellerTypes": [],
               "sellerRegionCodes": seller_region_codes,
@@ -148,22 +151,36 @@ def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=
                 if child:
                     loc_name = child.get("name", loc_name)
                 
-                # Format hasil agar sesuai dengan scraper lama
+                # Parsing TKDN
+                tkdn_obj = it.get("tkdn") or {}
+                tkdn_val = tkdn_obj.get("value", 0)
+                bmp_val = tkdn_obj.get("bmpValue", 0)
+                tkdn_total = tkdn_obj.get("tkdnBmp", 0)
+                
+                # Label PDN
+                labels = it.get("labels", [])
+                is_pdn = "PDN" in labels
+                
                 img_url = it.get("images", [""])[0] if it.get("images") else ""
                 slug = it.get("slug", "")
                 link = f"https://katalog.inaproc.id/product/{slug}"
                 
                 results.append({
+                    "Keyword": keyword,
                     "Nama Produk": it.get("name", "N/A"),
-                    "Harga": f"Rp {it.get('defaultPriceWithTax', 0):,.0f}",
+                    "Brand": it.get("brand", {}).get("brandName", "N/A") if it.get("brand") else "N/A",
+                    "Harga": it.get('defaultPriceWithTax', 0),
+                    "TKDN %": tkdn_val,
+                    "BMP %": bmp_val,
+                    "Total TKDN+BMP": tkdn_total,
+                    "Status PDN": "PDN" if is_pdn else "Impor",
                     "Penyedia": it.get("sellerName", "N/A"),
                     "Lokasi": loc_name,
                     "Link": link,
                     "Gambar": img_url,
-                    "Screenshot": None # Akan diisi Playwright jika mode Comparison aktif
+                    "Score": it.get("score", 0)
                 })
             
-            # Jika sudah di halaman terakhir, stop
             if p >= data.get("lastPage", 1):
                 break
                 
@@ -172,10 +189,3 @@ def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=
             break
             
     return results
-
-if __name__ == "__main__":
-    # Test Run
-    data = search_inaproc_api("laptop", max_pages=1)
-    print(f"Berhasil mengambil {len(data)} produk.")
-    if data:
-        print(f"Produk pertama: {data[0]['Nama Produk']} - {data[0]['Harga']}")
