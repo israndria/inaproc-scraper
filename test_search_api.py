@@ -113,7 +113,9 @@ def test_final_api_search(keyword="laptop"):
                 loc_name = f"{loc_name} > {child.get('name', '')}"
             
             slug = it.get("slug", "")
-            link = f"https://katalog.inaproc.id/product/{slug}"
+            product_id = it.get("id", "")
+            link_slug = f"https://katalog.inaproc.id/product/{slug}" if slug else ""
+            link = f"https://katalog.inaproc.id/product/{product_id}" if product_id else link_slug
             
             print(f"[{i+1}] {name} | Rp {price:,.0f} | {vendor} | {loc_name}")
 

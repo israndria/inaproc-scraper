@@ -76,6 +76,41 @@ REGION_MAP = {
     "Kota Banjarmasin": "63.71",
 }
 
+
+def _slugify_seller_name(name: str) -> str:
+    t = (name or "").strip().lower()
+    t = re.sub(r"^(cv|pt|ud|pd|toko)\.?\s+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[^a-z0-9]+", "-", t)
+    return t.strip("-")
+
+
+def _build_product_links(product_id: str, slug: str, seller_id: str) -> dict:
+    product_id = (product_id or "").strip()
+    slug = (slug or "").strip()
+    seller_id = (seller_id or "").strip()
+
+    candidates = []
+    if slug and product_id:
+        candidates.append(f"https://katalog.inaproc.id/product/{slug}/{product_id}")
+    if slug:
+        candidates.append(f"https://katalog.inaproc.id/product/{slug}")
+    if product_id:
+        candidates.append(f"https://katalog.inaproc.id/product/{product_id}")
+    if slug and seller_id:
+        candidates.append(f"https://katalog.inaproc.id/product/{slug}?sellerId={seller_id}")
+
+    seen = set()
+    uniq = []
+    for u in candidates:
+        if u and u not in seen:
+            seen.add(u)
+            uniq.append(u)
+
+    out = {"Link": uniq[0] if uniq else ""}
+    for i, u in enumerate(uniq[:4], start=1):
+        out[f"Link {i}"] = u
+    return out
+
 def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=None, max_pages=1, sort_order="Paling Sesuai"):
     """
     Scraper Inaproc menggunakan GraphQL API (v2 Dev).
@@ -163,10 +198,20 @@ def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=
                 
                 img_url = it.get("images", [""])[0] if it.get("images") else ""
                 slug = it.get("slug", "")
-                link = f"https://katalog.inaproc.id/product/{slug}"
+                product_id = it.get("id", "")
+                seller_id = it.get("sellerId", "")
+                seller_name = it.get("sellerName", "")
+                seller_slug = _slugify_seller_name(seller_name)
+
+                links = _build_product_links(product_id=product_id, slug=slug, seller_id=seller_id)
+                if seller_slug and slug:
+                    primary = f"https://katalog.inaproc.id/{seller_slug}/{slug}"
+                    links = {"Link": primary, "Link 1": primary, **{k: v for k, v in links.items() if k != "Link"}}
                 
                 results.append({
                     "Keyword": keyword,
+                    "Product ID": product_id,
+                    "Slug": slug,
                     "Nama Produk": it.get("name", "N/A"),
                     "Brand": it.get("brand", {}).get("brandName", "N/A") if it.get("brand") else "N/A",
                     "Harga": it.get('defaultPriceWithTax', 0),
@@ -176,7 +221,9 @@ def search_inaproc_api(keyword, min_price=None, max_price=None, location_filter=
                     "Status PDN": "PDN" if is_pdn else "Impor",
                     "Penyedia": it.get("sellerName", "N/A"),
                     "Lokasi": loc_name,
-                    "Link": link,
+                    "Seller ID": seller_id,
+                    "Seller Slug": seller_slug,
+                    **links,
                     "Gambar": img_url,
                     "Score": it.get("score", 0)
                 })
