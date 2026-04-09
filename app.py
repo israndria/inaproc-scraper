@@ -17,12 +17,15 @@ from datetime import datetime
 
 st.set_page_config(page_title="Inaproc Market Survey Tool", layout="wide")
 
-# Custom CSS untuk tampilan lebih modern
+# Custom CSS (ringan) untuk tampilan lebih rapi
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-    .status-box { background-color: #f0f4f8; padding: 15px; border-radius: 10px; border-left: 5px solid #007bff; margin-bottom: 20px; }
-    .highlight-price { background-color: #d4edda; font-weight: bold; }
+    .status-box { background-color: #f6f8fb; padding: 14px 16px; border-radius: 12px; border: 1px solid rgba(49, 51, 63, 0.15); margin-bottom: 16px; }
+    .status-box strong { color: rgba(49, 51, 63, 0.95); }
+    .muted { color: rgba(49, 51, 63, 0.65); font-size: 0.95rem; }
+    .kpi { border: 1px solid rgba(49, 51, 63, 0.15); border-radius: 12px; padding: 10px 12px; background: white; }
+    .kpi .label { color: rgba(49, 51, 63, 0.65); font-size: 0.8rem; margin-bottom: 2px; }
+    .kpi .value { font-size: 1.2rem; font-weight: 650; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -40,13 +43,75 @@ st.markdown("""
 
 # Helper
 def clean_price_value(value):
-    if not value: return 0
+    if not value:
+        return 0
     clean = re.sub(r'[^0-9]', '', str(value))
     return int(clean) if clean else 0
 
 def format_price_str(value):
     val = clean_price_value(value)
     return f"{val:,}" if val > 0 else "0"
+
+def _parse_rp_input(raw: str) -> int | None:
+    if raw is None:
+        return 0
+    s = str(raw).strip().lower()
+    if not s:
+        return 0
+
+    s = s.replace("rp", "").strip()
+    s = s.replace(".", "").replace(",", "")
+    s = re.sub(r"\s+", " ", s).strip()
+
+    m = re.fullmatch(r"(\d+)\s*(m|jt|juta)?", s)
+    if not m:
+        return None
+
+    base = int(m.group(1))
+    suffix = m.group(2)
+    if suffix == "m":
+        return base * 1_000_000_000
+    if suffix in {"jt", "juta"}:
+        return base * 1_000_000
+    return base
+
+def _format_digits_commas(digits: str) -> str:
+    if not digits:
+        return ""
+    # group per 3 from right
+    parts = []
+    while digits:
+        parts.append(digits[-3:])
+        digits = digits[:-3]
+    return ",".join(reversed(parts))
+
+def rupiah_input(label: str, key: str, default: int = 0, help_text: str | None = None) -> int | None:
+    """
+    Input harga dengan pemisah ribuan.
+    Catatan: Streamlit membatasi set session_state setelah widget dibuat,
+    jadi format dilakukan via `on_change` + state terpisah.
+    """
+    display_key = f"{key}__display"
+    digits_key = f"{key}__digits"
+
+    if display_key not in st.session_state:
+        st.session_state[display_key] = _format_digits_commas(str(int(default)))
+    if digits_key not in st.session_state:
+        st.session_state[digits_key] = re.sub(r"\D+", "", st.session_state[display_key] or "") or "0"
+
+    if help_text:
+        st.caption(help_text)
+
+    def _on_change():
+        raw_val = st.session_state.get(display_key, "")
+        digits = re.sub(r"\D+", "", (raw_val or "")) or "0"
+        st.session_state[digits_key] = digits
+        st.session_state[display_key] = _format_digits_commas(digits)
+
+    st.text_input(label, key=display_key, on_change=_on_change)
+
+    digits = st.session_state.get(digits_key, "0")
+    return _parse_rp_input(digits)
 
 # Sidebar
 with st.sidebar:
@@ -90,8 +155,17 @@ with st.sidebar:
     st.subheader("💰 Filter Harga")
     if use_api and HAS_API_CLIENT:
         st.caption("Jika muncul error CDP 9222, buka login dulu dari panel di atas.")
-    min_price = st.number_input("Harga Min (Rp)", 0, step=100000)
-    max_price = st.number_input("Harga Max (Rp)", 0, step=100000)
+
+    min_price = rupiah_input("Harga Min (Rp)", key="min_price_rp", default=0, help_text="Ketik angka, akan otomatis jadi 1,000,000 dst.")
+    max_price = rupiah_input("Harga Max (Rp)", key="max_price_rp", default=0, help_text="Ketik angka, akan otomatis jadi 1,000,000 dst.")
+    if min_price is None or max_price is None:
+        st.error("Format harga tidak dikenali. Contoh: 200000000 / 200.000.000 / 200 juta / 2 m")
+        min_price = 0
+        max_price = 0
+    else:
+        st.caption(f"Terbaca: Min = Rp {min_price:,} | Max = Rp {max_price:,}")
+        if max_price and max_price < min_price:
+            st.warning("Harga Max lebih kecil dari Harga Min. Filter akan diabaikan.")
     
     st.subheader("📍 Lokasi")
     KALSEL_LOCATIONS = [
@@ -112,6 +186,7 @@ with st.sidebar:
         for loc in KALSEL_LOCATIONS:
             if f"loc_{loc}" not in st.session_state: st.session_state[f"loc_{loc}"] = False
             if st.checkbox(loc, key=f"loc_{loc}"): selected_locations.append(loc)
+        st.caption(f"Terpilih: {len(selected_locations)} wilayah. (Batas website: maks. 10)")
     location_filter = ", ".join(selected_locations) if selected_locations else ""
 
     st.subheader("📊 Batasan")
@@ -119,7 +194,7 @@ with st.sidebar:
     limit_per_keyword = st.slider("Produk per Barang", 1, 60, 20 if use_api else 5)
     
     st.markdown("---")
-    run_btn = st.button("🚀 JALANKAN SURVEI PASAR", type="primary")
+    run_btn = st.button("🚀 Jalankan Survei", type="primary")
 
 # Main Logic
 if run_btn:
@@ -166,6 +241,10 @@ if run_btn:
         
         if all_results:
             df = pd.DataFrame(all_results)
+
+            if max_price and max_price < min_price:
+                min_price = 0
+                max_price = 0
             
             # --- ANALISIS HARGA TERENDAH ---
             df['Is Termurah'] = False
@@ -176,108 +255,138 @@ if run_btn:
                     df.loc[mask & (df['Harga'] == min_price_val), 'Is Termurah'] = True
 
             duration = time.time() - start_time
-            st.success(f"✅ Berhasil mengumpulkan {len(df)} data produk pembanding dalam {duration:.2f} detik.")
+            st.success(f"✅ Berhasil mengumpulkan {len(df)} produk pembanding dalam {duration:.2f} detik.")
+
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+            with kpi1:
+                st.markdown(f"<div class='kpi'><div class='label'>Keyword</div><div class='value'>{len(keywords)}</div></div>", unsafe_allow_html=True)
+            with kpi2:
+                st.markdown(f"<div class='kpi'><div class='label'>Total Produk</div><div class='value'>{len(df)}</div></div>", unsafe_allow_html=True)
+            with kpi3:
+                st.markdown(f"<div class='kpi'><div class='label'>Mode</div><div class='value'>{'API' if use_api else 'Playwright'}</div></div>", unsafe_allow_html=True)
+            with kpi4:
+                st.markdown(f"<div class='kpi'><div class='label'>Durasi</div><div class='value'>{duration:.1f}s</div></div>", unsafe_allow_html=True)
 
             # Tampilkan Tabel Utama
-            st.subheader("📋 Hasil Survei Pasar")
+            tab_hasil, tab_rekom, tab_export = st.tabs(["📋 Hasil", "⭐ Rekomendasi", "📥 Export"])
             
-            df_display = df.copy()
-            # Rapikan kolom: sembunyikan kolom debug/teknis dari tampilan.
-            kolom_sembunyi = {
-                "Product ID",
-                "Slug",
-                "Seller ID",
-                "Seller Slug",
-                "Link 1",
-                "Link 2",
-                "Link 3",
-                "Link 4",
-            }
-            kolom_tampil = [c for c in df_display.columns if c not in kolom_sembunyi]
-            urutan_prioritas = [
-                "Keyword",
-                "Nama Produk",
-                "Brand",
-                "Harga",
-                "Total TKDN+BMP",
-                "Status PDN",
-                "Penyedia",
-                "Lokasi",
-                "Link",
-                "Score",
-                "Source",
-            ]
-            kolom_akhir = []
-            for c in urutan_prioritas:
-                if c in kolom_tampil and c not in kolom_akhir:
-                    kolom_akhir.append(c)
-            for c in kolom_tampil:
-                if c not in kolom_akhir:
-                    kolom_akhir.append(c)
-            df_display = df_display[kolom_akhir]
-            # Formatter untuk mata uang jika tipenya int
-            if df_display['Harga'].dtype != object:
-                df_display['Harga'] = df_display['Harga'].apply(lambda x: f"Rp {x:,.0f}")
-            
-            col_config = {
-                "Link": st.column_config.LinkColumn("Link Produk"),
-                "Gambar": st.column_config.ImageColumn("Preview"),
-                "Is Termurah": st.column_config.CheckboxColumn("Termurah?"),
-            }
-            if 'Total TKDN+BMP' in df_display.columns:
-                col_config["Total TKDN+BMP"] = st.column_config.NumberColumn("TKDN+BMP", format="%.2f%%")
-            
-            st.dataframe(df_display, use_container_width=True, column_config=col_config)
+            with tab_hasil:
+                st.subheader("📋 Hasil Survei Pasar")
+
+                df_display = df.copy()
+                # Rapikan kolom: sembunyikan kolom debug/teknis dari tampilan.
+                kolom_sembunyi = {
+                    "Product ID",
+                    "Slug",
+                    "Seller ID",
+                    "Seller Slug",
+                    "Link 1",
+                    "Link 2",
+                    "Link 3",
+                    "Link 4",
+                }
+                kolom_tampil = [c for c in df_display.columns if c not in kolom_sembunyi]
+                urutan_prioritas = [
+                    "Keyword",
+                    "Nama Produk",
+                    "Brand",
+                    "Harga",
+                    "Total TKDN+BMP",
+                    "Status PDN",
+                    "Penyedia",
+                    "Lokasi",
+                    "Link",
+                    "Score",
+                    "Source",
+                    "Is Termurah",
+                ]
+                kolom_akhir = []
+                for c in urutan_prioritas:
+                    if c in kolom_tampil and c not in kolom_akhir:
+                        kolom_akhir.append(c)
+                for c in kolom_tampil:
+                    if c not in kolom_akhir:
+                        kolom_akhir.append(c)
+                df_display = df_display[kolom_akhir]
+
+                col_config = {
+                    "Link": st.column_config.LinkColumn("Link Produk"),
+                    "Gambar": st.column_config.ImageColumn("Preview"),
+                    "Is Termurah": st.column_config.CheckboxColumn("Termurah?"),
+                }
+                if "Harga" in df_display.columns:
+                    # tampilkan harga dengan pemisah ribuan agar mudah dibaca
+                    df_display["Harga"] = df_display["Harga"].apply(lambda x: f"Rp {int(x):,}" if not isinstance(x, str) else x)
+                    col_config["Harga"] = st.column_config.TextColumn("Harga")
+                if 'Total TKDN+BMP' in df_display.columns:
+                    col_config["Total TKDN+BMP"] = st.column_config.NumberColumn("TKDN+BMP", format="%.2f%%")
+
+                st.dataframe(df_display, use_container_width=True, column_config=col_config, hide_index=True)
 
             # --- SCREENSHOT VIEW (Jika ada) ---
-            if 'Screenshot' in df.columns and any(df['Screenshot']):
-                st.subheader("📸 Screenshot Detail Produk")
-                cols = st.columns(3)
-                for idx, row in df[df['Screenshot'].notna()].iterrows():
-                    with cols[idx % 3]:
-                        st.image(row['Screenshot'], caption=f"{row['Penyedia']} - {row['Harga']}", use_container_width=True)
+                if 'Screenshot' in df.columns and any(df['Screenshot']):
+                    st.subheader("📸 Screenshot Detail Produk")
+                    cols = st.columns(3)
+                    for idx, row in df[df['Screenshot'].notna()].iterrows():
+                        with cols[idx % 3]:
+                            caption_price = row["Harga"]
+                            if not isinstance(caption_price, str):
+                                caption_price = f"Rp {int(caption_price):,}"
+                            st.image(row['Screenshot'], caption=f"{row['Penyedia']} — {caption_price}", use_container_width=True)
 
             # --- EXPORT AREA ---
-            st.markdown("### 📥 Export ke Excel (Lampiran DPP)")
-            
-            df_export = df.copy()
-            df_export.insert(0, 'No.', range(1, len(df_export) + 1))
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_export.to_excel(writer, index=False, sheet_name='Survei Pasar')
-            excel_data = output.getvalue()
-            
-            st.download_button(
-                label="Download Excel Survei Pasar",
-                data=excel_data,
-                file_name=f"survei_pasar_{timestamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
             # --- HIGHLIGHT REKOMENDASI ---
-            st.subheader("⭐ Produk Rekomendasi (Termurah/TKDN Tinggi)")
-            for kw in keywords:
-                kw_data = df[df['Keyword'] == kw].copy()
-                if not kw_data.empty:
-                    # Sort by Termurah DESC, then TKDN DESC (if exists)
+            with tab_rekom:
+                st.subheader("⭐ Produk Rekomendasi (Termurah/TKDN Tinggi)")
+                for kw in keywords:
+                    kw_data = df[df['Keyword'] == kw].copy()
+                    if kw_data.empty:
+                        continue
+
                     sort_cols = ['Is Termurah']
-                    if 'Total TKDN+BMP' in kw_data.columns: sort_cols.append('Total TKDN+BMP')
-                    
+                    if 'Total TKDN+BMP' in kw_data.columns:
+                        sort_cols.append('Total TKDN+BMP')
+
                     kw_data = kw_data.sort_values(by=sort_cols, ascending=False)
                     best = kw_data.iloc[0]
-                    
-                    with st.expander(f"Terbaik untuk '{kw}': {best['Penyedia']} ({best['Harga'] if isinstance(best['Harga'], str) else f'Rp {best['Harga']:,.0f}'})"):
+
+                    best_price = best.get("Harga", 0)
+                    if isinstance(best_price, str):
+                        best_price_label = best_price
+                    else:
+                        best_price_label = f"Rp {int(best_price):,}"
+
+                    with st.expander(f"Terbaik untuk '{kw}': {best.get('Penyedia', '-') } ({best_price_label})"):
                         c1, c2 = st.columns([1, 3])
                         with c1:
-                            st.image(best['Gambar'], use_container_width=True)
+                            if best.get("Gambar"):
+                                st.image(best['Gambar'], use_container_width=True)
                         with c2:
-                            st.write(f"**Nama**: {best['Nama Produk']}")
+                            st.write(f"**Nama**: {best.get('Nama Produk', '-') }")
                             if 'Total TKDN+BMP' in best:
                                 st.write(f"**TKDN+BMP**: {best['Total TKDN+BMP']:.2f}% ({best.get('Status PDN', 'N/A')})")
-                            st.write(f"**Lokasi**: {best['Lokasi']}")
-                            st.write(f"[Buka di Katalog]({best['Link']})")
+                            st.write(f"**Lokasi**: {best.get('Lokasi', '-') }")
+                            if best.get("Link"):
+                                st.write(f"[Buka di Katalog]({best['Link']})")
+
+            with tab_export:
+                st.subheader("📥 Export ke Excel (Lampiran DPP)")
+
+                df_export = df.copy()
+                df_export.insert(0, 'No.', range(1, len(df_export) + 1))
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='Survei Pasar')
+                excel_data = output.getvalue()
+
+                st.download_button(
+                    label="Download Excel Survei Pasar",
+                    data=excel_data,
+                    file_name=f"survei_pasar_{timestamp}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
         else:
             st.warning("Tidak ditemukan data untuk kriteria tersebut.")
