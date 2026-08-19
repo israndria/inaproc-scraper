@@ -1,18 +1,16 @@
 @echo off
-:: Script Launcher Portable (Bisa di Google Drive / USB)
-:: Menggunakan relative path (%~dp0) agar tidak error jika pindah folder
+setlocal
+:: Launcher source lokal; dokumen/output tidak berada di repo ini.
 
 cd /d "%~dp0"
 echo Posisi Script: %CD%
-:: Coba jalankan dengan 'python' (asumsi sudah ada di PATH atau Run environment WinPython)
+set "PYTHON=%POKJA_PYTHON_SYS%"
+if not defined PYTHON set "PYTHON=C:\Users\MSI\AppData\Local\Programs\Python\Python312\python.exe"
 echo Membuka aplikasi...
-python -m streamlit run app.py
+"%PYTHON%" -m streamlit run app.py --server.port 8511 --server.headless true --browser.gatherUsageStats false
 
-:: Jika gagal, mungkin user belum setting path. 
 if %errorlevel% neq 0 (
     echo.
-    echo [ERROR] Python tidak ditemukan atau Streamlit gagal dijalankan.
-    echo Pastikan Anda menjalankan file ini dari lingkungan WinPython 
-    echo atau folder Python sudah terdaftar di System PATH.
+    echo [ERROR] Python lokal tidak ditemukan atau Streamlit gagal dijalankan.
     pause
 )

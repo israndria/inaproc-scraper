@@ -3,8 +3,12 @@ import os
 import json
 import time
 
-# Tambahkan path ke V22_InaprocOrder agar bisa import api_client
-sys.path.append(r"D:\Dokumen\@ POKJA 2026\V19_Scheduler\WPy64-313110\V22_InaprocOrder")
+# Tambahkan path ke V22 lokal agar bisa import api_client
+ORDER_BOT_PATH = os.environ.get(
+    "POKJA_V22_ROOT",
+    os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "procurement_core", "V22_InaprocOrder")),
+).strip().strip('"')
+sys.path.append(ORDER_BOT_PATH)
 
 try:
     from api_client import buat_client
